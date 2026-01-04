@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EYEBOOK - Leitor Imersivo</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://webgazer.cs.brown.edu/webgazer.js" type="text/javascript"></script>
+
+    <style>
+        :root {
+            --bg-dark: #121212;
+            --bg-panel: #1e1e1e;
+            --accent: #3b82f6;
+            --accent-glow: rgba(59, 130, 246, 0.5);
+            --text-main: #e5e5e5;
+            --text-muted: #a3a3a3;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- UI SUPERIOR --- */
+        header {
+            height: 60px;
+            background: var(--bg-panel);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            border-bottom: 1px solid #333;
+            z-index: 100;
+        }
+
+        .brand { font-weight: 700; font-size: 1.2rem; letter-spacing: 0.5px; display: flex; align-items: center; gap: 10px; }
+        .status-dot { width: 10px; height: 10px; background: #555; border-radius: 50%; display: inline-block; }
+        .status-dot.active { background: #00ff66; box-shadow: 0 0 8px #00ff66; }
+
+        .toolbar { display: flex; gap: 10px; align-items: center; }
+
+        button, .btn-upload {
+            background: #333;
+            color: #fff;
+            border: 1px solid #444;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover, .btn-upload:hover { background: #444; border-color: #666; }
+        button.primary { background: var(--accent); border-color: var(--accent); }
+        button.primary:hover { background: #2563eb; }
+
+        input[type="file"] { display: none; }
+
+        /* --- ÁREA DE LEITURA --- */
+        main {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            background: #000;
+        }
+
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+            transition: transform 0.3s ease;
+        }
+
+        canvas { display: block; max-height: 90vh; max-width: 95vw; }
+
+        /* Texturas */
+        .mode-modern canvas { filter: none; }
+        .mode-classic canvas { filter: sepia(0.3) contrast(0.95) brightness(0.9); }
+        .mode-dark canvas { filter: invert(0.9) hue-rotate(180deg); }
+
+        /* Indicadores Laterais (Feedback Visual) */
+        .gaze-zone {
+            position: absolute;
+            top: 0; bottom: 0;
+            width: 15%;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.1s;
+            z-index: 50;
+        }
+        .zone-left { left: 0; background: linear-gradient(90deg, var(--accent-glow), transparent); }
+        .zone-right { right: 0; background: linear-gradient(-90deg, var(--accent-glow), transparent); }
+
+        /* --- CAMADA DE CALIBRAÇÃO --- */
+        #calibration-layer {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.95);
+            z-index: 999;
+            display: none; /* Inicia oculto */
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .cal-point {
+            width: 30px; height: 30px;
+            background: #ff3b30;
+            border: 3px solid #fff;
+            border-radius: 50%;
+            position: absolute;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .cal-point:active { transform: scale(0.8); background: #00ff66; }
+        
+        /* Instruções no meio da tela de calibração */
+        .cal-instructions {
+            color: white; text-align: center; max-width: 500px;
+            pointer-events: none;
+        }
+
+        /* --- WEBCAM FEEDBACK --- */
+        #webgazerVideoContainer {
+            position: fixed !important;
+            bottom: 20px !important;
+            left: 20px !important;
+            width: 160px !important;
+            height: 120px !important;
+            border: 2px solid var(--accent);
+            border-radius: 8px;
+            overflow: hidden;
+            z-index: 90;
+            opacity: 0.6;
+            transition: opacity 0.3s;
+        }
+        #webgazerVideoContainer:hover { opacity: 1; }
+
+    </style>
+</head>
+<body class="mode-modern">
+
+    <header>
+        <div class="brand">
+            <div id="status-dot" class="status-dot"></div>
+            EYEBOOK
+        </div>
+
+        <div class="toolbar">
+            <span id="page-info" style="font-variant-numeric: tabular-nums; color: #888; margin-right: 15px;">
+                Sem Livro
+            </span>
+
+            <select id="theme-select" onchange="setTheme(this.value)" style="padding: 8px; border-radius: 6px; background:#333; color:white; border:none;">
+                <option value="modern">Papel Moderno</option>
+                <option value="classic">Clássico (Sépia)</option>
+                <option value="dark">Modo Noturno</option>
+            </select>
+
+            <button onclick="toggleEyeTracking()" id="btn-eye">👁️ Ativar Olhos</button>
+            <button onclick="startCalibration()">🎯 Calibrar</button>
+
+            <label class="btn-upload primary">
+                📂 Carregar PDF
+                <input type="file" id="file-upload" accept="application/pdf">
+            </label>
+        </div>
+    </header>
+
+    <main>
+        <div class="gaze-zone zone-left" id="zone-left"></div>
+        <div class="gaze-zone zone-right" id="zone-right"></div>
+        
+        <div id="canvas-container">
+            <canvas id="the-canvas"></canvas>
+        </div>
+    </main>
+
+    <div id="calibration-layer">
+        <div class="cal-instructions">
+            <h1>Calibração do Olhar</h1>
+            <p style="color:#bbb; margin-top:10px;">Clique em cada um dos 9 pontos vermelhos enquanto olha fixamente para eles.</p>
+            <p style="color:#bbb; margin-bottom:20px;">Isso ensina o sistema a seguir seus olhos.</p>
+            <button class="primary" onclick="finishCalibration()">Concluir e Ler</button>
+        </div>
+
+        <div class="cal-point" style="top:5%; left:5%" onclick="calClick(this)"></div>
+        <div class="cal-point" style="top:5%; left:50%; transform:translateX(-50%)" onclick="calClick(this)"></div>
+        <div class="cal-point" style="top:5%; right:5%" onclick="calClick(this)"></div>
+
+        <div class="cal-point" style="top:50%; left:5%; transform:translateY(-50%)" onclick="calClick(this)"></div>
+        <div class="cal-point" style="top:50%; left:50%; transform:translate(-50%, -50%)" onclick="calClick(this)"></div>
+        <div class="cal-point" style="top:50%; right:5%; transform:translateY(-50%)" onclick="calClick(this)"></div>
+
+        <div class="cal-point" style="bottom:5%; left:5%" onclick="calClick(this)"></div>
+        <div class="cal-point" style="bottom:5%; left:50%; transform:translateX(-50%)" onclick="calClick(this)"></div>
+        <div class="cal-point" style="bottom:5%; right:5%" onclick="calClick(this)"></div>
+    </div>
+
+    <script>
+        // --- 1. INICIALIZAÇÃO E PDF.JS ---
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+        let pdfDoc = null,
+            pageNum = 1,
+            pageRendering = false,
+            pageNumPending = null,
+            canvas = document.getElementById('the-canvas'),
+            ctx = canvas.getContext('2d');
+
+        // Carregar PDF
+        document.getElementById('file-upload').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file || file.type !== 'application/pdf') return alert('Selecione um PDF válido.');
+
+            const arrayBuffer = await file.arrayBuffer();
+            pdfDoc = await pdfjsLib.getDocument(arrayBuffer).promise;
+            
+            document.getElementById('page-info').innerText = `Página 1 de ${pdfDoc.numPages}`;
+            pageNum = 1;
+            renderPage(pageNum);
+        });
+
+        // Renderizar Página
+        function renderPage(num) {
+            pageRendering = true;
+            pdfDoc.getPage(num).then((page) => {
+                // Ajuste inteligente de escala baseado na altura da tela
+                const containerHeight = window.innerHeight - 80; // Header offset
+                const unscaledViewport = page.getViewport({scale: 1});
+                const scale = Math.min(
+                    (containerHeight / unscaledViewport.height), 
+                    (window.innerWidth * 0.9 / unscaledViewport.width)
+                );
+
+                const viewport = page.getViewport({scale: scale});
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                const renderContext = { canvasContext: ctx, viewport: viewport };
+                const renderTask = page.render(renderContext);
+
+                renderTask.promise.then(() => {
+                    pageRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
+                    }
+                });
+            });
+            document.getElementById('page-info').innerText = `Página ${num} de ${pdfDoc.numPages}`;
+        }
+
+        function queueRenderPage(num) {
+            if (pageRendering) pageNumPending = num;
+            else renderPage(num);
+        }
+
+        function prevPage() {
+            if (pageNum <= 1) return;
+            pageNum--;
+            queueRenderPage(pageNum);
+            flashFeedback('left');
+        }
+
+        function nextPage() {
+            if (!pdfDoc || pageNum >= pdfDoc.numPages) return;
+            pageNum++;
+            queueRenderPage(pageNum);
+            flashFeedback('right');
+        }
+
+        // --- 2. EYE TRACKING (WEBGAZER) ---
+        let trackingActive = false;
+        let gazeLeftCount = 0;
+        let gazeRightCount = 0;
+        const THRESHOLD = 15; // Sensibilidade
+        let lastAction = 0;
+
+        function toggleEyeTracking() {
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+                alert("⚠️ ATENÇÃO: Para usar a câmera, você precisa hospedar este site em HTTPS (cadeado verde).");
+            }
+
+            if (!trackingActive) {
+                webgazer.setRegression('ridge')
+                    .setGazeListener(gazeListener)
+                    .begin();
+                
+                webgazer.showVideoPreview(true);
+                trackingActive = true;
+                document.getElementById('status-dot').classList.add('active');
+                document.getElementById('btn-eye').innerText = "⏹ Parar Olhos";
+                alert("Eye Tracking Iniciado.\n\nIMPORTANTE: Clique em 'Calibrar' para configurar seus olhos.");
+            } else {
+                webgazer.end();
+                trackingActive = false;
+                document.getElementById('status-dot').classList.remove('active');
+                document.getElementById('btn-eye').innerText = "👁️ Ativar Olhos";
+                // Limpar video
+                const vid = document.getElementById('webgazerVideoContainer');
+                if(vid) vid.remove();
+            }
+        }
+
+        function gazeListener(data, clock) {
+            if (!data || !trackingActive) return;
+
+            // Cooldown de 1.5s entre páginas
+            if (Date.now() - lastAction < 1500) return;
+
+            const w = window.innerWidth;
+            const x = data.x;
+
+            // Lógica de Zonas
+            if (x < w * 0.15) { // 15% esquerda
+                gazeLeftCount++;
+                gazeRightCount = 0;
+                document.getElementById('zone-left').style.opacity = Math.min(1, gazeLeftCount / THRESHOLD);
+            } else if (x > w * 0.85) { // 15% direita
+                gazeRightCount++;
+                gazeLeftCount = 0;
+                document.getElementById('zone-right').style.opacity = Math.min(1, gazeRightCount / THRESHOLD);
+            } else {
+                // Reset rápido se olhar pro centro
+                gazeLeftCount = Math.max(0, gazeLeftCount - 2);
+                gazeRightCount = Math.max(0, gazeRightCount - 2);
+                document.getElementById('zone-left').style.opacity = 0;
+                document.getElementById('zone-right').style.opacity = 0;
+            }
+
+            // Disparo da Ação
+            if (gazeLeftCount > THRESHOLD) {
+                prevPage();
+                resetGaze();
+            }
+            if (gazeRightCount > THRESHOLD) {
+                nextPage();
+                resetGaze();
+            }
+        }
+
+        function resetGaze() {
+            gazeLeftCount = 0;
+            gazeRightCount = 0;
+            lastAction = Date.now();
+            document.getElementById('zone-left').style.opacity = 0;
+            document.getElementById('zone-right').style.opacity = 0;
+        }
+
+        // Feedback Visual de Troca
+        function flashFeedback(side) {
+            const el = document.getElementById(side === 'left' ? 'zone-left' : 'zone-right');
+            el.style.opacity = 1;
+            setTimeout(() => el.style.opacity = 0, 300);
+        }
+
+        // --- 3. CALIBRAÇÃO E UI ---
+        function startCalibration() {
+            if(!trackingActive) toggleEyeTracking();
+            document.getElementById('calibration-layer').style.display = 'flex';
+        }
+
+        function finishCalibration() {
+            document.getElementById('calibration-layer').style.display = 'none';
+        }
+
+        function calClick(el) {
+            el.style.background = '#00ff66';
+            // WebGazer aprende com o clique automaticamente
+        }
+
+        function setTheme(theme) {
+            document.body.className = `mode-${theme}`;
+        }
+
+        // Atalhos de Teclado
+        window.addEventListener('keydown', (e) => {
+            if (e.key === "ArrowRight") nextPage();
+            if (e.key === "ArrowLeft") prevPage();
+        });
+    </script>
+</body>
+</html>
